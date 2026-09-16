@@ -21,6 +21,7 @@ from .lane import herdr
 CHAT_FILE_NAME = "chat-url"
 PRELOAD = Path(__file__).with_name("preload.js")
 DEFAULT_CHAT = "https://chatgpt.com/"
+SERVICE = "com.rolfiersbox.pro-mcp"
 
 
 def fail(message: str) -> SystemExit:
@@ -101,10 +102,9 @@ def start(name: str, parent: str | None, chat: str | None, workspace: str | None
     url = chat or (chat_file.read_text().strip() if chat_file.exists() else DEFAULT_CHAT)
 
     if not port_open(port):
-        server = new_tab(workspace, "pro-mcp")
-        run_in(server, "pro-mcp")
-        wait_for(lambda: port_open(port), 30, "the pro-mcp server")
-        print(f"started pro-mcp in {server}")
+        # The server normally runs all the time as a launchd job; kick it if it is down.
+        subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/{SERVICE}"], capture_output=True, timeout=15)
+        wait_for(lambda: port_open(port), 45, f"the pro-mcp server (launchd job {SERVICE})")
 
     pane = new_tab(workspace, name)
     run_in(pane, "HERDR_AGENT=codex " + shlex.join([browser_bin(), "open", url, f"--preload={PRELOAD}"]))

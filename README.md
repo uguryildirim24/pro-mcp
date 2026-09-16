@@ -14,7 +14,7 @@ MCP server that lets ChatGPT (Developer Mode, e.g. GPT-6 Pro) read Rolf's local 
 uv tool install --editable ~/projects/pro-mcp
 pro-mcp            # serve + funnel, logs calls
 pro-mcp --local    # 127.0.0.1 only
-pro-mcp start      # open a Pro chat as herdr agent "pro" (starts the server if needed)
+pro-mcp start      # open a Pro chat as herdr agent "pro"
 pro-mcp lane       # older: serve + funnel with a lane terminal UI, Pro long-polls it
 pro-mcp url        # connector URL for ChatGPT
 uv run pytest -q
@@ -26,7 +26,7 @@ ChatGPT setup: Settings → Security and login → Developer mode on. Then Plugi
 
 `pro-mcp start [--name pro] [--parent <pane>] [--chat <url>]`, run inside herdr, works like `herdr agent start`:
 
-- It starts `pro-mcp` in a `pro-mcp` tab if nothing listens on the port.
+- The server runs all the time as the launchd job `com.rolfiersbox.pro-mcp` (`~/Library/LaunchAgents/com.rolfiersbox.pro-mcp.plist`, log `~/.local/state/pro-mcp/pro-mcp.log`, KeepAlive). `start` kickstarts it if the port is closed.
 - It opens a tab named after the agent, running terminal-browser (the herdr plugin) on the Pro chat, reports it as kind `codex` (`HERDR_AGENT`), names it and links it to the parent (default: the calling pane).
 - `--chat` is saved to `~/.config/pro-mcp/chat-url` and reused next time. Set GPT-6 Pro and turn on the Local files app in that chat once; both stick to the chat. The browser profile keeps the login.
 - `preload.js` keeps focus in the message box, so `herdr agent prompt pro "..."` types into it and Enter sends.

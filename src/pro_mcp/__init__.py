@@ -6,7 +6,7 @@ pro-mcp lane [--name N]  serve + funnel with a terminal UI: run it in a herdr pa
                          becomes lane N (default "pro") that other agents can prompt
 pro-mcp start [--name N] [--parent P] [--chat URL]
                          open a Pro chat in terminal-browser as herdr agent N (default "pro"),
-                         starting the server if needed. --chat is remembered for next time
+                         --chat is remembered for next time
 pro-mcp url              print the connector URL to paste into ChatGPT
 pro-mcp rotate           replace the secret in the URL (the old ChatGPT app stops working)
 """
