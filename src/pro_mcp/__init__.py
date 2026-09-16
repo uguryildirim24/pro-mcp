@@ -63,6 +63,49 @@ def main() -> None:
     serve(local_only="--local" in args)
 
 
+def access_log(app, secret: str):
+    """ASGI wrapper that prints one line per HTTP request, with the secret redacted."""
+    import time
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] != "http":
+            return await app(scope, receive, send)
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        body = bytearray()
+        status = {"code": 0}
+
+        async def recv():
+            msg = await receive()
+            if msg.get("type") == "http.request" and len(body) < 4096:
+                body.extend(msg.get("body", b"")[:4096])
+            return msg
+
+        async def snd(msg):
+            if msg["type"] == "http.response.start":
+                status["code"] = msg["status"]
+            await send(msg)
+
+        try:
+            await app(scope, recv, snd)
+        finally:
+            method = ""
+            if body:
+                try:
+                    method = json.loads(body).get("method", "")
+                except (ValueError, AttributeError):
+                    method = "?"
+            path = scope["path"].replace(secret, "<token>")
+            print(
+                f"{time.strftime('%H:%M:%S')}  http {scope['method']} {path} -> {status['code']} {method}"
+                f"  ua={headers.get('user-agent', '')[:40]!r} accept={headers.get('accept', '')!r}"
+                f" origin={headers.get('origin', '')!r} ctype={headers.get('content-type', '')!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    return wrapped
+
+
 def serve(local_only: bool) -> None:
     import logging
 
@@ -90,6 +133,7 @@ def serve(local_only: bool) -> None:
         ),
     )
 
+    app = access_log(app, token())
     logging.basicConfig(level=logging.WARNING)
     logging.getLogger("mcp").setLevel(logging.WARNING)
     print(f"pro-mcp  roots: {', '.join(sandbox.display(r) for r in sandbox.roots)}", file=sys.stderr)
