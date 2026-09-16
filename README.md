@@ -14,8 +14,19 @@ MCP server that lets ChatGPT (Developer Mode, e.g. GPT-6 Pro) read Rolf's local 
 uv tool install --editable ~/projects/pro-mcp
 pro-mcp            # serve + funnel, logs calls
 pro-mcp --local    # 127.0.0.1 only
+pro-mcp lane       # serve + funnel with a lane terminal UI, run it in a herdr pane
 pro-mcp url        # connector URL for ChatGPT
 uv run pytest -q
 ```
 
 ChatGPT setup: Settings → Security and login → Developer mode on. Then Plugins → + → create an app from a remote MCP server, paste `pro-mcp url`, authentication "No authentication".
+
+## Lane mode
+
+`pro-mcp lane [--name pro]` turns a Pro chat into a herdr lane. Run it in a herdr pane, then paste the kickoff it shows into a Pro chat with the app on.
+
+- The pane registers with herdr as agent kind `codex` (herdr only prompts known kinds; override with `PRO_LANE_AGENT`) and names itself `--name`.
+- Text typed into the pane, or sent with `herdr agent prompt pro "..."`, is queued. Pro picks it up with `wait_for_message`, reports with `progress` and `reply`, and hands off with `herdr_prompt`.
+- The pane shows a live transcript and reports working/idle to herdr.
+- A ChatGPT turn can't run forever. When Pro stops polling for `PRO_LANE_POLL_GRACE` seconds (default 180), the lane pushes `WAITING <name> ChatGPT turn ended - Rolf must type continue in the Pro chat` to its herdr parent (or `coordinator`).
+- The lane uses the same port (`PRO_MCP_PORT`, default 8765) and funnel as `pro-mcp`, so run one or the other.

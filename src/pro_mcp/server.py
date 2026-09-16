@@ -14,6 +14,7 @@ from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
+from . import lane as lane_mod
 from .sandbox import SKIP_DIRS, DENY_NAMES, PolicyError, Sandbox, is_denied_name
 
 MAX_READ_LINES = 2000
@@ -36,6 +37,13 @@ takes many paths in one call, and search returns context lines. Do not re-read a
 already have; page with offset only when the header says there is more.
 write_doc creates or appends to markdown files only; it never overwrites existing text.
 herdr_prompt sends a one-line message to another agent pane (e.g. a DONE handoff).
+
+LANE MODE (when wait_for_message works): you are a herdr lane named in the kickoff.
+Loop forever inside this one turn: call wait_for_message; when it returns a message, do the
+work, narrate with progress (short, every few minutes of work), put anything a human should
+read in reply (markdown), send exactly one herdr_prompt handoff (DONE/WAITING or the
+protocol line the message asks for), then call wait_for_message again. When it returns
+"no message", call it again immediately. Never end your turn on your own.
 Secret-looking files (.env, keys, auth.json, ...) are refused on purpose."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -48,10 +56,15 @@ mcp = MCPServer(name="pro-files", title="Local project files (read-only)", instr
 
 def log(tool: str, detail: str, started: float, outcome: str = "ok") -> None:
     ms = int((time.monotonic() - started) * 1000)
+    if lane_mod.current is not None:
+        lane_mod.current.emit("tool", f"{tool} {detail}" + ("" if outcome == "ok" else f"  [{outcome}]"))
+        return
     print(f"{time.strftime('%H:%M:%S')}  {tool:<10} {outcome:<7} {ms:>5}ms  {detail}", file=sys.stderr, flush=True)
 
 
 def guarded(tool: str, detail: str, fn):
+    if lane_mod.current is not None:
+        lane_mod.current.touch()
     started = time.monotonic()
     try:
         out = fn()
@@ -381,3 +394,49 @@ def herdr_prompt(agent: str, message: str) -> str:
         raise ValueError(f"herdr refused the prompt to {agent}: {last}")
 
     return guarded("h_prompt", f"{agent}: {message[:80]}", run)
+
+
+def _lane() -> "lane_mod.Lane":
+    if lane_mod.current is None:
+        raise ValueError("no lane is running: start pro-mcp with `pro-mcp lane`")
+    return lane_mod.current
+
+
+@mcp.tool(title="Wait for the next lane message", annotations=ADDITIVE_WRITE)
+def wait_for_message(timeout_seconds: int = 45) -> str:
+    """Block until a message arrives for this lane (typed in its herdr pane or sent with
+    `herdr agent prompt`), up to timeout_seconds (5-55). Returns the message, or
+    'no message' on timeout. Takes the message off the queue. Call it in a loop."""
+
+    def run() -> str:
+        item = _lane().wait_message(max(5, min(timeout_seconds, 55)))
+        if item is None:
+            return "no message"
+        source, text = item
+        return f"message from {source}:\n{text}"
+
+    return guarded("wait", f"{timeout_seconds}s", run)
+
+
+@mcp.tool(title="Show a reply in the lane terminal", annotations=ADDITIVE_WRITE)
+def reply(markdown: str) -> str:
+    """Show text in the lane's terminal pane, rendered as markdown. Use it for every answer
+    a human or another agent should be able to read (they read the pane, not ChatGPT)."""
+
+    def run() -> str:
+        _lane().emit("reply", markdown)
+        return "shown"
+
+    return guarded("reply", f"{len(markdown)}ch", run)
+
+
+@mcp.tool(title="Post a progress note", annotations=ADDITIVE_WRITE)
+def progress(note: str) -> str:
+    """Post a one-line progress note to the lane terminal, e.g. 'reading SPEC §3-5' or
+    'drafting findings 4/9'. Use it every few minutes during long work."""
+
+    def run() -> str:
+        _lane().emit("progress", " ".join(note.split())[:300])
+        return "ok"
+
+    return guarded("progress", note[:60], run)
