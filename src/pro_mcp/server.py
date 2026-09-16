@@ -30,7 +30,7 @@ MAX_SEARCH_RESULTS = 200
 MAX_GIT_LINES = 600
 
 INSTRUCTIONS = """\
-Access to Rolf's local project files on his Mac, plus herdr handoffs.
+Read access to Rolf's local project files on his Mac, plus two write tools: write_doc (create or append markdown) and herdr_prompt (message another agent pane).
 Paths can be absolute, start with ~, or be relative to the first root.
 Read efficiently: read_file returns whole files (up to 1500 lines) by default, read_files
 takes many paths in one call, and search returns context lines. Do not re-read a file you
@@ -51,7 +51,7 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempot
 ADDITIVE_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 sandbox = Sandbox.from_env()
-mcp = MCPServer(name="pro-files", title="Local project files (read-only)", instructions=INSTRUCTIONS)
+mcp = MCPServer(name="pro-files", title="Local project files and herdr", instructions=INSTRUCTIONS)
 
 
 def log(tool: str, detail: str, started: float, outcome: str = "ok") -> None:

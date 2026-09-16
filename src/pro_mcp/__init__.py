@@ -4,6 +4,9 @@ pro-mcp                  serve on 127.0.0.1 and publish it with a foreground Tai
 pro-mcp --local          serve on 127.0.0.1 only (no funnel), for testing
 pro-mcp lane [--name N]  serve + funnel with a terminal UI: run it in a herdr pane, and Pro
                          becomes lane N (default "pro") that other agents can prompt
+pro-mcp start [--name N] [--parent P] [--chat URL]
+                         open a Pro chat in terminal-browser as herdr agent N (default "pro"),
+                         starting the server if needed. --chat is remembered for next time
 pro-mcp url              print the connector URL to paste into ChatGPT
 pro-mcp rotate           replace the secret in the URL (the old ChatGPT app stops working)
 """
@@ -64,6 +67,14 @@ def main() -> None:
     if args and args[0] == "rotate":
         rotate_token()
         print(f"new URL: https://{tailnet_host()}{mcp_path()}")
+        return
+    if args and args[0] == "start":
+        from .start import start
+
+        def opt(flag: str) -> str | None:
+            return args[args.index(flag) + 1] if flag in args else None
+
+        start(opt("--name") or "pro", opt("--parent"), opt("--chat"), opt("--workspace"), PORT, CONFIG_DIR)
         return
     if args and args[0] == "lane":
         name = args[args.index("--name") + 1] if "--name" in args else "pro"

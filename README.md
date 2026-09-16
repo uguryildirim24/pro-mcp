@@ -14,14 +14,26 @@ MCP server that lets ChatGPT (Developer Mode, e.g. GPT-6 Pro) read Rolf's local 
 uv tool install --editable ~/projects/pro-mcp
 pro-mcp            # serve + funnel, logs calls
 pro-mcp --local    # 127.0.0.1 only
-pro-mcp lane       # serve + funnel with a lane terminal UI, run it in a herdr pane
+pro-mcp start      # open a Pro chat as herdr agent "pro" (starts the server if needed)
+pro-mcp lane       # older: serve + funnel with a lane terminal UI, Pro long-polls it
 pro-mcp url        # connector URL for ChatGPT
 uv run pytest -q
 ```
 
 ChatGPT setup: Settings → Security and login → Developer mode on. Then Plugins → + → create an app from a remote MCP server, paste `pro-mcp url`, authentication "No authentication".
 
-## Lane mode
+## Pro as a herdr agent
+
+`pro-mcp start [--name pro] [--parent <pane>] [--chat <url>]`, run inside herdr, works like `herdr agent start`:
+
+- It starts `pro-mcp` in a `pro-mcp` tab if nothing listens on the port.
+- It opens a tab named after the agent, running terminal-browser (the herdr plugin) on the Pro chat, reports it as kind `codex` (`HERDR_AGENT`), names it and links it to the parent (default: the calling pane).
+- `--chat` is saved to `~/.config/pro-mcp/chat-url` and reused next time. Set GPT-6 Pro and turn on the Local files app in that chat once; both stick to the chat. The browser profile keeps the login.
+- `preload.js` keeps focus in the message box, so `herdr agent prompt pro "..."` types into it and Enter sends.
+- Pro answers through its tools: `write_doc` for the turn file, `herdr_prompt` for the DONE handoff. Nothing reads the page back.
+- herdr can't see Pro's turn state (the pane shows `idle` while Pro thinks). Wait for its DONE before prompting again.
+
+## Lane mode (older)
 
 `pro-mcp lane [--name pro]` turns a Pro chat into a herdr lane. Run it in a herdr pane, then paste the kickoff it shows into a Pro chat with the app on.
 
