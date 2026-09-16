@@ -96,13 +96,14 @@ def serve(local_only: bool) -> None:
     print(f"local:   http://127.0.0.1:{PORT}{mcp_path()}", file=sys.stderr)
     if public_url:
         tailscale = shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
-        # Foreground funnel: the public URL only exists while this process runs.
-        funnel = subprocess.Popen(
-            [tailscale, "funnel", str(PORT)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+        # Foreground funnel inside a watchdog shell: it stops when this process exits,
+        # even on SIGKILL, so the public URL only exists while pro-mcp runs.
+        watchdog = (
+            f'"{tailscale}" funnel {PORT} >/dev/null 2>&1 & f=$!; '
+            'trap \'kill $f 2>/dev/null\' EXIT HUP INT TERM; '
+            f'while kill -0 {os.getpid()} 2>/dev/null && kill -0 $f 2>/dev/null; do sleep 1; done'
         )
+        funnel = subprocess.Popen(["/bin/sh", "-c", watchdog], start_new_session=True)
         print(f"public:  {public_url}", file=sys.stderr)
     print("calls:", file=sys.stderr, flush=True)
 
@@ -110,7 +111,7 @@ def serve(local_only: bool) -> None:
         uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
     finally:
         if funnel and funnel.poll() is None:
-            os.killpg(funnel.pid, signal.SIGINT)
+            os.killpg(funnel.pid, signal.SIGTERM)
             try:
                 funnel.wait(timeout=5)
             except subprocess.TimeoutExpired:
