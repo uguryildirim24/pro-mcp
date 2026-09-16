@@ -36,10 +36,12 @@ def test_resolve_rejects_outside_and_symlink_escape(root: Path) -> None:
 
 
 def test_read_file_pages(root: Path) -> None:
-    out = server.read_file("app/src/main.py", offset=1, limit=1000)
-    assert "lines 1-400 of 500 (next: offset=401)" in out
+    out = server.read_file("app/src/main.py")
+    assert "lines 1-500 of 500\n" in out
+    out = server.read_file("app/src/main.py", offset=1, limit=100)
+    assert "lines 1-100 of 500 (more: offset=101)" in out
     out = server.read_file("app/src/main.py", offset=401)
-    assert "lines 401-500 of 500" in out and "next" not in out.splitlines()[0]
+    assert "lines 401-500 of 500" in out and "more" not in out.splitlines()[0]
     assert server.read_file("app/.env").startswith("denied:")
     assert server.read_file("/etc/hosts").startswith("denied:")
 
@@ -61,3 +63,43 @@ def test_search_and_find_respect_policy(root: Path) -> None:
 
 def test_git_rejects_option_refs(root: Path) -> None:
     assert server.git("app", "log", ref="--output=/tmp/x").startswith("error:")
+
+
+def test_read_files_batches_and_reports_errors(root: Path) -> None:
+    out = server.read_files(["app/src/main.py", "app/.env", "app/notes.md"])
+    assert "lines 1-500 of 500" in out
+    assert "app/.env  error:" in out
+    assert "a needle here" in out
+
+
+def test_search_context(root: Path) -> None:
+    out = server.search("line 250$", "app/src", context=2)
+    assert "line 248" in out and "line 252" in out
+
+
+def test_write_doc_create_append_never_overwrite(root: Path) -> None:
+    assert server.write_doc("app/docs/review-1.md", "# Review").startswith("created")
+    assert (root / "app/docs/review-1.md").read_text() == "# Review\n"
+    assert server.write_doc("app/docs/review-1.md", "again").startswith("error:")
+    assert server.write_doc("app/docs/review-1.md", "more", append=True).startswith("appended")
+    assert (root / "app/docs/review-1.md").read_text() == "# Review\nmore\n"
+    assert server.write_doc("app/src/evil.py", "x").startswith("error:")
+    assert server.write_doc("app/.env.md", "x").startswith("denied:")
+    assert server.write_doc("/tmp/x.md", "x").startswith("denied:")
+
+
+def test_herdr_prompt_retries_and_limits(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake(*args: str, timeout: int = 20):
+        calls.append(args)
+        code = 1 if len(calls) == 1 else 0
+        return subprocess.CompletedProcess(args, code, stdout="", stderr="agent_not_ready")
+
+    monkeypatch.setattr(server, "_herdr", fake)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    assert server.herdr_prompt("fable", "DONE  spec-review-1\n docs/x.md -") == "sent to fable (on retry)"
+    assert calls[-1] == ("agent", "prompt", "fable", "DONE spec-review-1 docs/x.md -")
+    assert server.herdr_prompt("fable", "x" * 700).startswith("error:")

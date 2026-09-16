@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -13,21 +16,31 @@ from mcp.types import ToolAnnotations
 
 from .sandbox import SKIP_DIRS, DENY_NAMES, PolicyError, Sandbox, is_denied_name
 
-MAX_READ_LINES = 400
+MAX_READ_LINES = 2000
+DEFAULT_READ_LINES = 1500
+MAX_READ_CHARS = 150_000
+MAX_BATCH_CHARS = 250_000
 MAX_LINE_CHARS = 2000
+MAX_DOC_BYTES = 400_000
+MAX_HANDOFF_CHARS = 600
 MAX_FILE_BYTES = 5_000_000
 MAX_LIST_ENTRIES = 400
 MAX_SEARCH_RESULTS = 200
 MAX_GIT_LINES = 600
 
 INSTRUCTIONS = """\
-Read-only access to Rolf's local project files on his Mac.
+Access to Rolf's local project files on his Mac, plus herdr handoffs.
 Paths can be absolute, start with ~, or be relative to the first root.
-Start with list_roots or list_dir, use search/find_files to locate code, then read_file
-in chunks (offset/limit, at most 400 lines per call). Nothing here can modify files.
+Read efficiently: read_file returns whole files (up to 1500 lines) by default, read_files
+takes many paths in one call, and search returns context lines. Do not re-read a file you
+already have; page with offset only when the header says there is more.
+write_doc creates or appends to markdown files only; it never overwrites existing text.
+herdr_prompt sends a one-line message to another agent pane (e.g. a DONE handoff).
 Secret-looking files (.env, keys, auth.json, ...) are refused on purpose."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+# Honest annotations: these change state but never destroy existing content.
+ADDITIVE_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 sandbox = Sandbox.from_env()
 mcp = MCPServer(name="pro-files", title="Local project files (read-only)", instructions=INSTRUCTIONS)
@@ -99,32 +112,66 @@ def list_dir(path: str = ".", depth: int = 1) -> str:
     return guarded("list_dir", f"{path} depth={depth}", run)
 
 
+def _read_text(path: str, offset: int, limit: int, char_budget: int) -> str:
+    real = sandbox.resolve(path)
+    if not real.is_file():
+        raise ValueError(f"{path} is not a file")
+    if real.stat().st_size > MAX_FILE_BYTES:
+        raise ValueError(f"{path} is larger than {MAX_FILE_BYTES} bytes")
+    data = real.read_bytes()
+    if b"\x00" in data[:8000]:
+        raise ValueError(f"{path} looks binary")
+    all_lines = data.decode("utf-8", errors="replace").splitlines()
+    start = max(1, offset)
+    count = max(1, min(limit, MAX_READ_LINES))
+    out: list[str] = []
+    used = 0
+    n = start
+    for line in all_lines[start - 1 : start - 1 + count]:
+        row = f"{n:>6}\t{line[:MAX_LINE_CHARS]}"
+        if out and used + len(row) + 1 > char_budget:
+            break
+        out.append(row)
+        used += len(row) + 1
+        n += 1
+    end = start + len(out) - 1
+    more = f" (more: offset={end + 1})" if end < len(all_lines) else ""
+    return f"=== {sandbox.display(real)}  lines {start}-{end} of {len(all_lines)}{more}\n" + "\n".join(out)
+
+
 @mcp.tool(title="Read file", annotations=READ_ONLY)
-def read_file(path: str, offset: int = 1, limit: int = 200) -> str:
-    """Read a text file with line numbers. offset is 1-based; limit is at most 400 lines.
-    The header says how many lines the file has, so you can page through it."""
+def read_file(path: str, offset: int = 1, limit: int = DEFAULT_READ_LINES) -> str:
+    """Read a text file with line numbers. By default returns the whole file up to 1500 lines
+    (max 2000 per call, ~150k chars). The header says if there is more and which offset to use."""
+    return guarded("read_file", f"{path} @{offset}+{limit}", lambda: _read_text(path, offset, limit, MAX_READ_CHARS))
+
+
+@mcp.tool(title="Read several files", annotations=READ_ONLY)
+def read_files(paths: list[str], max_lines_each: int = DEFAULT_READ_LINES) -> str:
+    """Read up to 20 text files in one call (whole files up to max_lines_each lines each,
+    ~250k chars total). Prefer this over many read_file calls."""
 
     def run() -> str:
-        real = sandbox.resolve(path)
-        if not real.is_file():
-            raise ValueError(f"{path} is not a file")
-        if real.stat().st_size > MAX_FILE_BYTES:
-            raise ValueError(f"{path} is larger than {MAX_FILE_BYTES} bytes")
-        data = real.read_bytes()
-        if b"\x00" in data[:8000]:
-            raise ValueError(f"{path} looks binary")
-        all_lines = data.decode("utf-8", errors="replace").splitlines()
-        start = max(1, offset)
-        count = max(1, min(limit, MAX_READ_LINES))
-        chunk = all_lines[start - 1 : start - 1 + count]
-        end = start + len(chunk) - 1
-        body = "\n".join(
-            f"{n:>6}\t{line[:MAX_LINE_CHARS]}" for n, line in enumerate(chunk, start=start)
-        )
-        more = f" (next: offset={end + 1})" if end < len(all_lines) else ""
-        return f"{sandbox.display(real)}  lines {start}-{end} of {len(all_lines)}{more}\n{body}"
+        parts: list[str] = []
+        budget = MAX_BATCH_CHARS
+        for path in paths[:20]:
+            if budget < 2000:
+                parts.append(f"=== {path}  skipped: batch size limit reached, read it separately")
+                continue
+            try:
+                text = _read_text(path, 1, max_lines_each, budget)
+            except (PolicyError, OSError, ValueError) as e:
+                text = f"=== {path}  error: {e}"
+            parts.append(text)
+            budget -= len(text)
+        if len(paths) > 20:
+            parts.append(f"[{len(paths) - 20} paths ignored: at most 20 per call]")
+        return "\n\n".join(parts)
 
-    return guarded("read_file", f"{path} @{offset}+{limit}", run)
+    return guarded("read_files", f"{len(paths)} files", run)
+
+
+_RG_PREFIX = re.compile(r"^(.*?)(?::\d+:|-\d+-)")
 
 
 def _denied_path(path: str) -> bool:
@@ -141,8 +188,9 @@ def _rg_excludes() -> list[str]:
 
 
 @mcp.tool(title="Search file contents", annotations=READ_ONLY)
-def search(pattern: str, path: str = ".", glob: str | None = None, ignore_case: bool = False, max_results: int = 50) -> str:
-    """Search file contents with a ripgrep regex. Returns path:line:text matches.
+def search(pattern: str, path: str = ".", glob: str | None = None, ignore_case: bool = False, context: int = 3, max_results: int = 80) -> str:
+    """Search file contents with a ripgrep regex. Returns path:line:text matches with `context`
+    lines around each match (0-10), so you often don't need a follow-up read.
     glob narrows files, e.g. '*.rs' or 'src/**/*.ts'. Respects .gitignore."""
 
     def run() -> str:
@@ -151,6 +199,8 @@ def search(pattern: str, path: str = ".", glob: str | None = None, ignore_case: 
         cmd = ["rg", "--line-number", "--no-heading", "--color=never", "--max-columns=300", "--max-count=20"]
         if ignore_case:
             cmd.append("-i")
+        if context > 0:
+            cmd += ["--context", str(min(context, 10))]
         if glob:
             cmd += ["--glob", glob]
         # later globs win in ripgrep, so the excludes must come after the caller's glob
@@ -160,9 +210,15 @@ def search(pattern: str, path: str = ".", glob: str | None = None, ignore_case: 
         if proc.returncode == 2:
             raise ValueError(proc.stderr.strip()[:500])
         home = str(Path.home())
-        lines = [l.replace(home, "~", 1) for l in proc.stdout.splitlines() if not _denied_path(l.split(":", 1)[0])]
-        head = lines[:n]
-        tail = f"\n[{len(lines) - n} more matches not shown]" if len(lines) > n else ""
+        lines = []
+        for l in proc.stdout.splitlines():
+            m = _RG_PREFIX.match(l)
+            if l != "--" and m and _denied_path(m.group(1)):
+                continue
+            lines.append(l.replace(home, "~", 1))
+        limit = n * (1 + 2 * min(max(context, 0), 10))
+        head = lines[:limit]
+        tail = f"\n[{len(lines) - limit} more lines not shown; narrow the search]" if len(lines) > limit else ""
         return ("\n".join(head) + tail) if head else "no matches"
 
     return guarded("search", f"/{pattern}/ in {path}" + (f" glob={glob}" if glob else ""), run)
@@ -226,3 +282,102 @@ def git(repo: str, command: Literal["status", "log", "diff", "show", "branches"]
         return "\n".join(lines[:MAX_GIT_LINES]) + tail or "(empty)"
 
     return guarded("git", f"{command} {repo}" + (f" {ref}" if ref else "") + (f" -- {file}" if file else ""), run)
+
+
+@mcp.tool(title="Write markdown doc", annotations=ADDITIVE_WRITE)
+def write_doc(path: str, content: str, append: bool = False) -> str:
+    """Create a new markdown (.md) file, or append to one with append=true. Never overwrites
+    existing text: creating a file that already exists fails. Parent folders are created.
+    Use it for review files, turn files and notes, e.g. docs/spec-review-3.md."""
+
+    def run() -> str:
+        real = sandbox.resolve(path)
+        if real.suffix.lower() != ".md":
+            raise ValueError("write_doc only writes .md files")
+        data = content if content.endswith("\n") else content + "\n"
+        if len(data.encode()) > MAX_DOC_BYTES:
+            raise ValueError(f"content is larger than {MAX_DOC_BYTES} bytes")
+        if append:
+            if not real.is_file():
+                raise ValueError(f"{path} does not exist; create it first")
+            with real.open("a", encoding="utf-8") as f:
+                f.write(data)
+            verb = "appended"
+        else:
+            real.parent.mkdir(parents=True, exist_ok=True)
+            # re-check after mkdir so a symlinked parent can't escape the roots
+            real = sandbox.resolve(str(real))
+            with real.open("x", encoding="utf-8") as f:
+                f.write(data)
+            verb = "created"
+        return f"{verb} {sandbox.display(real)} ({len(data.encode())} bytes)"
+
+    return guarded("write_doc", f"{path} {'append' if append else 'create'} {len(content)}ch", run)
+
+
+def _herdr(*args: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    herdr = shutil.which("herdr") or str(Path.home() / ".local/bin/herdr")
+    return subprocess.run([herdr, *args], capture_output=True, text=True, timeout=timeout)
+
+
+@mcp.tool(title="List herdr agents", annotations=READ_ONLY)
+def herdr_agents() -> str:
+    """List agent panes in Rolf's herdr session: name, status (working/idle/blocked/done), agent kind,
+    lane tokens and working directory. Use the name with herdr_read or herdr_prompt."""
+
+    def run() -> str:
+        proc = _herdr("agent", "list")
+        if proc.returncode != 0:
+            raise ValueError((proc.stderr or proc.stdout).strip()[:500])
+        agents = json.loads(proc.stdout)["result"]["agents"]
+        home = str(Path.home())
+        rows = []
+        for a in agents:
+            tokens = " ".join(f"{k}={v}" for k, v in (a.get("tokens") or {}).items())
+            cwd = (a.get("cwd") or "").replace(home, "~", 1)
+            rows.append(f"{a.get('name') or a.get('pane_id')}  {a.get('agent_status')}  {a.get('agent')}  {tokens}  {cwd}".rstrip())
+        return "\n".join(rows) or "no agents"
+
+    return guarded("h_agents", "", run)
+
+
+@mcp.tool(title="Read herdr agent output", annotations=READ_ONLY)
+def herdr_read(agent: str, lines: int = 80) -> str:
+    """Read the recent terminal output of an agent pane (at most 400 lines)."""
+
+    def run() -> str:
+        proc = _herdr("agent", "read", agent, "--source", "recent-unwrapped", "--lines", str(max(1, min(lines, 400))))
+        if proc.returncode != 0:
+            raise ValueError((proc.stderr or proc.stdout).strip()[:500])
+        try:
+            return json.loads(proc.stdout)["result"].get("text", proc.stdout)
+        except (ValueError, KeyError, TypeError):
+            return proc.stdout
+
+    return guarded("h_read", f"{agent} {lines}", run)
+
+
+@mcp.tool(title="Send herdr handoff", annotations=ADDITIVE_WRITE)
+def herdr_prompt(agent: str, message: str) -> str:
+    """Send a one-line message to another agent pane, e.g.
+    'DONE spec-review-3 docs/spec-review-3.md -' or 'FROM pro ROUND 3: docs/spec-review-3.md - 5 findings'.
+    Max 600 characters, no newlines. Point at files instead of pasting content.
+    Returns an error if the target is blocked or not ready; it is retried once."""
+
+    def run() -> str:
+        text = " ".join(message.split())
+        if not text:
+            raise ValueError("empty message")
+        if len(text) > MAX_HANDOFF_CHARS:
+            raise ValueError(f"message is longer than {MAX_HANDOFF_CHARS} chars; point at a file instead")
+        last = ""
+        for attempt in (1, 2):
+            proc = _herdr("agent", "prompt", agent, text)
+            if proc.returncode == 0:
+                return f"sent to {agent}" + (" (on retry)" if attempt == 2 else "")
+            last = (proc.stderr or proc.stdout).strip()[:500]
+            if attempt == 1:
+                time.sleep(5)
+        raise ValueError(f"herdr refused the prompt to {agent}: {last}")
+
+    return guarded("h_prompt", f"{agent}: {message[:80]}", run)
