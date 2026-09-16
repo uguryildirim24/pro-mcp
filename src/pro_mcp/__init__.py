@@ -23,6 +23,7 @@ from typing import Callable
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "pro-mcp"
 TOKEN_FILE = CONFIG_DIR / "token"
+WATCHDOG_PID = CONFIG_DIR / "funnel-watchdog.pid"
 PORT = int(os.environ.get("PRO_MCP_PORT", "8765"))
 
 
@@ -141,21 +142,52 @@ def build_app(local_only: bool, sink: Callable[[str, int], None]):
 
 def start_funnel() -> subprocess.Popen:
     tailscale = shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
-    # Foreground funnel inside a watchdog shell: it stops when this process exits,
-    # even on SIGKILL, so the public URL only exists while pro-mcp runs.
-    watchdog = (
-        f'"{tailscale}" funnel {PORT} >/dev/null 2>&1 & f=$!; '
-        'trap \'kill $f 2>/dev/null\' EXIT HUP INT TERM; '
-        f'while kill -0 {os.getpid()} 2>/dev/null && kill -0 $f 2>/dev/null; do sleep 1; done'
+    stop_stale_watchdog()
+    # A background funnel path on 443, so it can share the port with other paths
+    # (wiki-mcp holds /wiki). A foreground funnel is refused once 443 has a listener.
+    res = subprocess.run(
+        [tailscale, "funnel", "--bg", "--https=443", "--set-path=/", str(PORT)],
+        capture_output=True, text=True, timeout=30,
     )
-    return subprocess.Popen(["/bin/sh", "-c", watchdog], start_new_session=True)
+    if res.returncode != 0:
+        raise SystemExit(f"tailscale funnel failed: {(res.stderr or res.stdout).strip()}")
+    # Background paths outlive their process, so a watchdog shell removes ours when
+    # pro-mcp exits, even on SIGKILL: the public URL only exists while pro-mcp runs.
+    off = f'"{tailscale}" funnel --https=443 --set-path=/ off >/dev/null 2>&1'
+    watchdog = (
+        f"trap '{off}' EXIT; trap 'exit 0' HUP INT TERM; "
+        f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 1; done"
+    )
+    proc = subprocess.Popen(["/bin/sh", "-c", watchdog], start_new_session=True)
+    WATCHDOG_PID.write_text(f"{proc.pid}\n")
+    return proc
+
+
+def stop_stale_watchdog() -> None:
+    """Let a watchdog left by a killed pro-mcp remove its path before we set ours,
+    or it would remove ours a second later."""
+    try:
+        pid = int(WATCHDOG_PID.read_text())
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        if "--set-path=/ off" not in cmd:  # gone, or the pid now belongs to something else
+            return
+        os.killpg(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        return
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.2)
 
 
 def stop_funnel(funnel: subprocess.Popen | None) -> None:
     if funnel and funnel.poll() is None:
         os.killpg(funnel.pid, signal.SIGTERM)
         try:
-            funnel.wait(timeout=5)
+            funnel.wait(timeout=15)
         except subprocess.TimeoutExpired:
             os.killpg(funnel.pid, signal.SIGKILL)
 
