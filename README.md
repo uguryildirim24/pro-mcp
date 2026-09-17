@@ -27,11 +27,11 @@ ChatGPT setup: Settings → Security and login → Developer mode on. Then Plugi
 `pro-mcp start [--name pro] [--parent <pane>] [--chat <url>]`, run inside herdr, works like `herdr agent start`:
 
 - The server runs all the time as the launchd job `com.rolfiersbox.pro-mcp` (`~/Library/LaunchAgents/com.rolfiersbox.pro-mcp.plist`, log `~/.local/state/pro-mcp/pro-mcp.log`, KeepAlive). `start` kickstarts it if the port is closed.
-- It opens a tab named after the agent, running terminal-browser (the herdr plugin) on the Pro chat, reports it as kind `codex` (`HERDR_AGENT`), names it and links it to the parent (default: the calling pane).
+- It opens a tab named after the agent, running terminal-browser (the herdr plugin) on the Pro chat, reports it as herdr agent kind `chatgpt` (`HERDR_AGENT`; herdr reads working/idle from the composer button in the page frames, `[experimental] pane_graphics_detection`), names it and links it to the parent (default: the calling pane).
 - `--chat` is saved to `~/.config/pro-mcp/chat-url` and reused next time. Set GPT-6 Pro and turn on the Local files app in that chat once; both stick to the chat. The browser profile keeps the login.
 - `preload.js` keeps focus in the message box, so `herdr agent prompt pro "..."` types into it and Enter sends.
 - Pro answers through its tools: `write_doc` for the turn file, `herdr_prompt` for the DONE handoff. Nothing reads the page back.
-- herdr can't see Pro's turn state (the pane shows `idle` while Pro thinks). Wait for its DONE before prompting again.
+- herdr shows the pane `working` while Pro thinks and `done` after, so `herdr agent wait pro` works. An error or a turn that needs "continue" still reads idle; the DONE push is the real signal.
 
 ## Lane mode (older)
 

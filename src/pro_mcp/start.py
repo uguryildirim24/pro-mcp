@@ -107,7 +107,7 @@ def start(name: str, parent: str | None, chat: str | None, workspace: str | None
         wait_for(lambda: port_open(port), 45, f"the pro-mcp server (launchd job {SERVICE})")
 
     pane = new_tab(workspace, name)
-    run_in(pane, "HERDR_AGENT=codex " + shlex.join([browser_bin(), "open", url, f"--preload={PRELOAD}"]))
+    run_in(pane, "HERDR_AGENT=chatgpt " + shlex.join([browser_bin(), "open", url, f"--preload={PRELOAD}"]))
     key = wait_for(lambda: browser_key(pane), 60, "terminal-browser to open")
     wait_for(lambda: focus_composer(key), 90, "the ChatGPT message box (log in if the page asks)")
 
