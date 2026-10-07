@@ -1,6 +1,10 @@
 # pro-mcp
 
-MCP server that lets ChatGPT (Developer Mode, e.g. GPT-6 Pro) read Rolf's local project files, write markdown docs and send herdr handoffs.
+MCP server that lets ChatGPT read Rolf's local project files, edit files and run commands on his Mac, and send herdr handoffs.
+
+- `exec_command` runs `/bin/zsh -c` as Rolf, with his filesystem and network access. It can edit files and run installed tools and tests. It is not restricted to `~/projects`; the read-tool path policy below does not constrain shell commands. Use only for user-authorized work.
+- Long commands return a `session_id`. `write_stdin` retrieves new output, sends stdin, closes stdin, or terminates the command process group. Calls wait at most 10 seconds, retain at most 1 MB of output between polls, and allow up to 32 open command sessions. Commands do not have an interactive PTY; sessions last for this server process.
+- These tools provide local terminal/file capabilities, not the desktop app's browser controls or an automatic Codex subagent pool. Codex Native2 separately requires an active outer Codex turn.
 
 - Read tools (`readOnlyHint`): `list_roots`, `list_dir`, `read_file` (whole file up to 1500 lines), `read_files` (up to 20 files per call), `search` (ripgrep with context lines), `find_files`, `git` (status/log/diff/show/branches), `herdr_agents`, `herdr_read`.
 - Additive write tools (not read-only, not destructive): `write_doc` creates or appends `.md` files and never overwrites; `herdr_prompt` sends a one-line (<=600 chars) handoff to an agent pane and retries once if herdr refuses.
