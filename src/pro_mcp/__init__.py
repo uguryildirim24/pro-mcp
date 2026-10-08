@@ -1,14 +1,14 @@
-"""pro-mcp: give ChatGPT (Developer Mode, e.g. GPT-6 Pro) Rolf's local files and a herdr lane.
+"""pro-mcp: give ChatGPT Rolf's local project files and a herdr lane.
 
-pro-mcp                  serve on 127.0.0.1 and publish it with a foreground Tailscale Funnel
+pro-mcp                  serve on 127.0.0.1 and publish it with a background Tailscale Funnel
 pro-mcp --local          serve on 127.0.0.1 only (no funnel), for testing
 pro-mcp lane [--name N]  serve + funnel with a terminal UI: run it in a herdr pane, and Pro
                          becomes lane N (default "pro") that other agents can prompt
-pro-mcp start [--name N] [--parent P] [--chat URL]
+pro-mcp start [--name N] [--parent P] [--chat URL] [--workspace W]
                          open a Pro chat in terminal-browser as herdr agent N (default "pro"),
                          --chat is remembered for next time
 pro-mcp url              print the connector URL to paste into ChatGPT
-pro-mcp rotate           replace the secret in the URL (the old ChatGPT app stops working)
+pro-mcp rotate           replace the saved secret; restart the server to use the new URL
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def start_funnel() -> subprocess.Popen:
     tailscale = shutil.which("tailscale") or "/opt/homebrew/bin/tailscale"
     stop_stale_watchdog()
     # A background funnel path on 443, so it can share the port with other paths
-    # (wiki-mcp holds /wiki). A foreground funnel is refused once 443 has a listener.
+    # A foreground funnel is refused once 443 has a listener.
     res = subprocess.run(
         [tailscale, "funnel", "--bg", "--https=443", "--set-path=/", str(PORT)],
         capture_output=True, text=True, timeout=30,
